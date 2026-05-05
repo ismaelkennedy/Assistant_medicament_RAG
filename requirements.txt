@@ -1,6 +1,6 @@
-groq
-sentence-transformers
-faiss-cpu
-requests
-python-dotenv
-pandas
+groq==1.2.0
+sentence-transformers==5.4.1
+faiss-cpu==1.13.2
+requests==2.33.1
+python-dotenv==1.2.2
+pandas==3.0.2
