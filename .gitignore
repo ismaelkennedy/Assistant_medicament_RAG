@@ -210,6 +210,13 @@ tempCodeRunnerFile.py
 # PyPI configuration file
 .pypirc
 
+# Projet RAG - données et index
+data/
+index/
+
+# macOS
+.DS_Store
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
