@@ -54,25 +54,53 @@ SECTIONS_UTILES = {
 
 # --- Bloc 2 : Chargement et filtrage des données ---
 
+def reparer_encodage(texte) -> str:
+    # Certaines cellules peuvent être vides (NaN)
+    if not isinstance(texte, str):
+        return ""
+    # Le HTML dans le CSV est du UTF-8 stocké dans un fichier Latin-1
+    # On re-encode en Latin-1 puis on décode en UTF-8 pour retrouver les vrais caractères
+    try:
+        return texte.encode("latin-1", errors="ignore").decode("utf-8", errors="replace")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return texte
+
+
 def charger_donnees(chemin: str) -> pd.DataFrame:
     print("Chargement du fichier CSV...")
     df = pd.read_csv(chemin, sep="\t", encoding="latin-1")
+    df["RCP_html"] = df["RCP_html"].apply(reparer_encodage)
     print(f"  {len(df)} notices chargées au total")
     return df
 
 
+def extraire_denomination(html: str) -> str:
+    # On cherche la position de la section dénomination puis on prend
+    # les 600 caractères suivants — la classe CSS varie selon les notices
+    if not isinstance(html, str):
+        return ""
+    idx = html.lower().find("rcpdenomination")
+    if idx < 0:
+        return ""
+    extrait = html[idx: idx + 600]
+    texte = re.sub(r"<[^>]+>", " ", extrait)
+    return re.sub(r"\s+", " ", texte).strip().lower()
+
+
 def filtrer_medicaments(df: pd.DataFrame, noms: list) -> pd.DataFrame:
     print("Filtrage des médicaments cibles...")
-    html_lower = df["RCP_html"].str.lower()
+
+    # On extrait la dénomination une seule fois pour toutes les notices
+    denominations = df["RCP_html"].apply(extraire_denomination)
 
     lignes_selectionnees = []
     for nom in noms:
-        masque = html_lower.str.contains(nom, na=False)
+        pattern = r"\b" + re.escape(nom) + r"\b"
+        masque = denominations.str.contains(pattern, regex=True, na=False)
         correspondances = df[masque]
         if len(correspondances) == 0:
             print(f"  ATTENTION : '{nom}' introuvable dans la base")
             continue
-        # On prend uniquement la première notice trouvée pour ce médicament
         lignes_selectionnees.append(correspondances.iloc[0])
         print(f"  '{nom}' : notice trouvée (Code CIS: {correspondances.iloc[0]['Code_CIS']})")
 
@@ -84,10 +112,21 @@ def filtrer_medicaments(df: pd.DataFrame, noms: list) -> pd.DataFrame:
 # --- Bloc 3 : Extraction du texte depuis le HTML ---
 
 def extraire_nom_medicament(soup: BeautifulSoup) -> str:
-    balise = soup.find("a", {"name": "RcpDenomination"})
-    if balise and balise.parent:
-        texte = balise.parent.get_text(separator=" ", strip=True)
-        return texte.replace("1. DENOMINATION DU MEDICAMENT", "").strip()
+    from bs4 import Tag
+    ancre = soup.find("a", {"name": "RcpDenomination"})
+    if not ancre:
+        return "Inconnu"
+    for element in ancre.parent.next_siblings:
+        if not isinstance(element, Tag):
+            continue
+        # On s'arrête seulement sur les vraies sections (name="Rcp...")
+        # Les ancres _Toc... sont des signets internes, pas des sections
+        ancre_section = element.find("a", attrs={"name": lambda n: n and n.startswith("Rcp")})
+        if ancre_section:
+            break
+        texte = element.get_text(separator=" ", strip=True)
+        if texte:
+            return texte
     return "Inconnu"
 
 
@@ -180,9 +219,12 @@ def creer_documents(sections: list) -> list:
         chunks = chunker(section["texte"])
 
         for j, chunk in enumerate(chunks):
+            # On préfixe le contenu avec le nom du médicament et la section
+            # pour que l'embedding capture ces informations clés
+            contenu_enrichi = f"{section['medicament']} — {section['section']} : {chunk}"
             documents.append({
                 "id": f"doc_{i:04d}_chunk_{j:02d}",
-                "contenu": chunk,
+                "contenu": contenu_enrichi,
                 "metadata": {
                     "medicament": section["medicament"],
                     "code_cis": section["code_cis"],
